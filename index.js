@@ -3,22 +3,20 @@ const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
 const { createClient } = require('@supabase/supabase-js');
-require('dotenv').config(); // Load .env
+require('dotenv').config(); 
 
 const app = express();
 app.use(cors());
 
 const server = http.createServer(app);
 
-// --- SUPABASE SETUP ---
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
 const io = new Server(server, {
   cors: { origin: "*", methods: ["GET", "POST"] }
 });
 
-// --- TEXT CACHE SYSTEM ---
-let globalTexts = ["The quick brown fox jumps over the lazy dog."]; // Fallback
+let globalTexts = ["The quick brown fox jumps over the lazy dog."]; 
 
 async function refreshTexts() {
   const { data, error } = await supabase.from('typing_texts').select('content');
@@ -27,26 +25,42 @@ async function refreshTexts() {
     console.log(`📚 Texts Reloaded! Loaded ${globalTexts.length} paragraphs.`);
   }
 }
-
-// Load texts immediately on start
 refreshTexts();
 
 // --- GAME STATE ---
 let queue = []; 
-let liveMatches = {}; 
+let liveMatches = {}; // Stores both WAITING and IN_PROGRESS matches
 let activeMatches = 0; 
 
 io.on('connection', (socket) => {
   
-  // --- ADMIN: RELOAD TEXTS ---
-  // When Admin adds a text, they send this signal to update the server instantly
-  socket.on('admin_refresh_texts', () => {
-    refreshTexts();
-  });
-
-  // --- ADMIN: LIVE DATA ---
+  // --- ADMIN COMMANDS ---
+  socket.on('admin_refresh_texts', () => refreshTexts());
+  
   socket.on('admin_subscribe', () => {
     socket.emit('live_matches_list', liveMatches);
+  });
+
+  // NEW: Admin starts a specific match
+  socket.on('admin_start_match', (roomId) => {
+    const match = liveMatches[roomId];
+    if (match && match.status === 'WAITING') {
+        match.status = 'IN_PROGRESS';
+        match.startTime = Date.now();
+        
+        // Notify players to START
+        io.to(roomId).emit('match_found', { 
+          roomId, 
+          opponentName: match.p2.name, // Logic handled in Arena to swap names
+          text: match.text, 
+          p1: match.p1.name, 
+          p2: match.p2.name
+        });
+        
+        // Update Admin
+        io.emit('live_matches_list', liveMatches);
+        console.log(`🚀 Match Started by Admin: ${roomId}`);
+    }
   });
 
   // --- MATCHMAKING ---
@@ -66,28 +80,28 @@ io.on('connection', (socket) => {
         p2Socket.join(roomId);
         
         activeMatches++;
-        console.log(`⚡ MATCH STARTED! Room: ${roomId}`);
+        console.log(`⚡ Match Created (Waiting for Admin): ${roomId}`);
 
-        // SELECT RANDOM TEXT FROM DATABASE CACHE
         const randomText = globalTexts[Math.floor(Math.random() * globalTexts.length)];
 
-        // Create Live State
+        // 1. Create Match State (Set Status to WAITING)
         liveMatches[roomId] = {
             roomId,
-            startTime: Date.now(),
+            status: 'WAITING', // <--- NEW STATUS
+            startTime: null,
             text: randomText,
             p1: { id: p1.socketId, name: p1.name, wpm: 0, progress: 0, input: "" },
             p2: { id: p2.socketId, name: p2.name, wpm: 0, progress: 0, input: "" }
         };
 
-        // Notify Players
-        io.to(roomId).emit('match_found', { 
-          roomId, 
-          opponentName: p2.name, 
-          text: randomText, 
-          p1: p1.name, p2: p2.name
+        // 2. Notify Players to WAIT
+        io.to(roomId).emit('waiting_for_admin', {
+            roomId,
+            p1: p1.name,
+            p2: p2.name
         });
 
+        // 3. Notify Admin (New match appears in list)
         io.emit('live_matches_list', liveMatches);
       }
     }
@@ -96,7 +110,7 @@ io.on('connection', (socket) => {
   // --- TYPING UPDATES ---
   socket.on('type_update', (data) => {
     const match = liveMatches[data.roomId];
-    if (match) {
+    if (match && match.status === 'IN_PROGRESS') { // Only accept typing if started
         if (socket.id === match.p1.id) {
             match.p1 = { ...match.p1, wpm: data.wpm, progress: data.progress, input: data.input };
         } else if (socket.id === match.p2.id) {
