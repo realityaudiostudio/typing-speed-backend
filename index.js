@@ -108,15 +108,23 @@ io.on('connection', (socket) => {
   });
 
   // --- TYPING UPDATES ---
+  // --- TYPING UPDATES ---
   socket.on('type_update', (data) => {
     const match = liveMatches[data.roomId];
-    if (match && match.status === 'IN_PROGRESS') { // Only accept typing if started
+    if (match && match.status === 'IN_PROGRESS') { 
         if (socket.id === match.p1.id) {
-            match.p1 = { ...match.p1, wpm: data.wpm, progress: data.progress, input: data.input };
+            // Updated to include accuracy
+            match.p1 = { ...match.p1, wpm: data.wpm, progress: data.progress, input: data.input, accuracy: data.accuracy };
         } else if (socket.id === match.p2.id) {
-            match.p2 = { ...match.p2, wpm: data.wpm, progress: data.progress, input: data.input };
+            // Updated to include accuracy
+            match.p2 = { ...match.p2, wpm: data.wpm, progress: data.progress, input: data.input, accuracy: data.accuracy };
         }
-        socket.to(data.roomId).emit('opponent_update', { progress: data.progress, wpm: data.wpm });
+        // Broadcast accuracy to opponent too
+        socket.to(data.roomId).emit('opponent_update', { 
+            progress: data.progress, 
+            wpm: data.wpm, 
+            accuracy: data.accuracy 
+        });
         io.to(data.roomId).emit('spectator_update', match);
     }
   });
